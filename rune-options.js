@@ -38,21 +38,25 @@
   ];
 
   /**
-   * Apply rune effects to mods (additive, multiplied by slot count).
+   * Apply rune effects to mods (additive, multiplied by count).
+   * The caller is responsible for enforcing per-rune limits.
    */
-  function applyRuneToMods(mods, rune, slotCount) {
+  function applyRuneToMods(mods, rune, count) {
     const out = { ...mods };
+    const slots = Math.max(0, count | 0);
+    if (!slots) return out;
+
     for (const [k, v] of Object.entries(rune)) {
       if (k === 'id' || k === 'name') continue;
       if (typeof v === 'number' && out[k] !== undefined) {
-        out[k] = (out[k] ?? 0) + v * slotCount;
+        out[k] = (out[k] ?? 0) + v * slots;
       }
     }
     return out;
   }
 
   /**
-   * Compute best rune variant: strip rune mods, try each rune in all slots, return highest DPS.
+   * Compute best rune variant: strip rune mods, try each rune configuration, return highest DPS.
    *
    * @param {Object} base - Reverse-engineered base stats
    * @param {Object} mods - All modifiers (we'll subtract rune mods)
@@ -80,29 +84,75 @@
       quality: mods.quality ?? 0,
     };
 
+    // Pre-resolve rune refs for convenience
+    const iron = RUNE_OPTIONS.find((r) => r.id === 'greater-iron');
+    const summer = RUNE_OPTIONS.find((r) => r.id === 'thane-summer');
+    const spring = RUNE_OPTIONS.find((r) => r.id === 'thane-spring');
+    const quip = RUNE_OPTIONS.find((r) => r.id === 'quipolatl');
+
     let best = null;
-    for (const rune of RUNE_OPTIONS) {
-      const modsWithRune = applyRuneToMods(modsWithoutRunes, rune, runeSlotCount);
-      const input = {
-        basePhysMin: base.basePhysMin,
-        basePhysMax: base.basePhysMax,
-        baseAps: base.baseAps,
-        baseFireMin: base.baseFireMin ?? 0,
-        baseFireMax: base.baseFireMax ?? 0,
-        baseColdMin: base.baseColdMin ?? 0,
-        baseColdMax: base.baseColdMax ?? 0,
-        baseLightningMin: base.baseLightningMin ?? 0,
-        baseLightningMax: base.baseLightningMax ?? 0,
-        baseChaosMin: base.baseChaosMin ?? 0,
-        baseChaosMax: base.baseChaosMax ?? 0,
-        ...modsWithRune,
-      };
-      const result = calcDps(input);
-      const dps = result?.totalDps ?? 0;
-      if (!best || dps > best.dps) {
-        best = { rune, dps, modsWithRune };
+
+    // Constraints:
+    // - At most 1 Spring
+    // - At most 1 Summer
+    // - Remaining sockets can be Iron and/or Quipolatl
+    for (let springCount = 0; springCount <= Math.min(1, runeSlotCount); springCount++) {
+      for (let summerCount = 0; summerCount <= Math.min(1, runeSlotCount - springCount); summerCount++) {
+        const remainingAfterSpringSummer = runeSlotCount - springCount - summerCount;
+        for (let ironCount = 0; ironCount <= remainingAfterSpringSummer; ironCount++) {
+          const quipCount = remainingAfterSpringSummer - ironCount;
+
+          let modsWithRunes = { ...modsWithoutRunes };
+
+          if (iron && ironCount > 0) {
+            modsWithRunes = applyRuneToMods(modsWithRunes, iron, ironCount);
+          }
+          if (summer && summerCount > 0) {
+            modsWithRunes = applyRuneToMods(modsWithRunes, summer, summerCount);
+          }
+          if (spring && springCount > 0) {
+            modsWithRunes = applyRuneToMods(modsWithRunes, spring, springCount);
+          }
+          if (quip && quipCount > 0) {
+            modsWithRunes = applyRuneToMods(modsWithRunes, quip, quipCount);
+          }
+
+          const input = {
+            basePhysMin: base.basePhysMin,
+            basePhysMax: base.basePhysMax,
+            baseAps: base.baseAps,
+            baseFireMin: base.baseFireMin ?? 0,
+            baseFireMax: base.baseFireMax ?? 0,
+            baseColdMin: base.baseColdMin ?? 0,
+            baseColdMax: base.baseColdMax ?? 0,
+            baseLightningMin: base.baseLightningMin ?? 0,
+            baseLightningMax: base.baseLightningMax ?? 0,
+            baseChaosMin: base.baseChaosMin ?? 0,
+            baseChaosMax: base.baseChaosMax ?? 0,
+            ...modsWithRunes,
+          };
+
+          const result = calcDps(input);
+          const dps = result?.totalDps ?? 0;
+
+          if (!best || dps > best.dps) {
+            best = {
+              rune: {
+                configuration: {
+                  iron: ironCount,
+                  summer: summerCount,
+                  spring: springCount,
+                  quip: quipCount,
+                },
+              },
+              dps,
+              modsWithRune: modsWithRunes,
+            };
+          }
+        }
       }
     }
+
     return best;
   }
 
