@@ -122,7 +122,9 @@
         }
       }
     } else {
-      titleLines.push(`${dps} DPS ÷ ${price.amount} ${price.currency} = ${(dps / price.amount).toFixed(2)}`);
+      titleLines.push(
+        `${dps} DPS ÷ ${price.amount} ${price.currency} = ${(dps / price.amount).toFixed(2)}`
+      );
     }
 
     const ratio = displayDps / price.amount;
@@ -132,13 +134,140 @@
     row.setAttribute(BADGE_DATA_ATTR, 'true');
   }
 
+  function evaluateRowValue(row) {
+    if (!isWeapon(row)) return null;
+
+    const dps = getDps(row);
+    const price = getPrice(row);
+    if (dps == null || !price) return null;
+
+    const currencyShort = formatCurrency(price.currency);
+
+    let displayDps = dps;
+    const parsed = window.PoeValueEvaluator?.weaponParser?.parseAndReverseEngineer?.(row);
+    let bestRune = null;
+    let runeSlotCount = 0;
+
+    if (parsed?.base) {
+      const ro = window.PoeValueEvaluator?.runeOptions;
+      const wp = window.PoeValueEvaluator?.weaponDps;
+      runeSlotCount = parsed.runeSlotCount ?? 0;
+      if (ro?.computeBestRuneVariant && wp?.calcWeaponDps && runeSlotCount > 0) {
+        const best = ro.computeBestRuneVariant(
+          parsed.base,
+          parsed.mods,
+          parsed.runeMods ?? {},
+          runeSlotCount,
+          (input) => wp.calcWeaponDps(input)
+        );
+        if (best) {
+          displayDps = best.dps;
+          bestRune = best.rune?.name || null;
+        }
+      }
+    }
+
+    const ratio = displayDps / price.amount;
+
+    return {
+      row,
+      dps,
+      displayDps,
+      priceAmount: price.amount,
+      priceCurrency: price.currency,
+      currencyShort,
+      ratio,
+      bestRune,
+      runeSlotCount,
+    };
+  }
+
+  function renderTopList(entries) {
+    if (!entries || entries.length === 0) return;
+
+    const container = findResultsContainer();
+    if (!container) return;
+
+    let box = container.querySelector('.poe-value-evaluator-toplist');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'poe-value-evaluator-toplist';
+      if (container.firstChild) {
+        container.insertBefore(box, container.firstChild);
+      } else {
+        container.appendChild(box);
+      }
+    }
+
+    const top = entries
+      .slice()
+      .sort((a, b) => b.ratio - a.ratio)
+      .slice(0, 5);
+
+    if (top.length === 0) {
+      box.style.display = 'none';
+      return;
+    }
+
+    box.style.display = '';
+    box.innerHTML = '';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'poe-value-evaluator-toplist__title';
+    titleEl.textContent = 'Top 5 DPS per Div';
+    box.appendChild(titleEl);
+
+    const listEl = document.createElement('ol');
+    listEl.className = 'poe-value-evaluator-toplist__list';
+    box.appendChild(listEl);
+
+    top.forEach((entry) => {
+      const itemEl = document.createElement('li');
+      itemEl.className = 'poe-value-evaluator-toplist__item';
+
+      const ratioText = `${entry.ratio.toFixed(2)} DPS/${entry.currencyShort}`;
+      const dpsText = `${entry.displayDps.toFixed(1)} DPS`;
+      const priceText = `${entry.priceAmount} ${entry.priceCurrency}`;
+
+      let label = `${ratioText} — ${dpsText} for ${priceText}`;
+      if (entry.bestRune && entry.runeSlotCount > 0) {
+        label += ` (Best rune: ${entry.bestRune}, ${entry.runeSlotCount} slots)`;
+      }
+
+      itemEl.textContent = label;
+
+      itemEl.addEventListener('click', () => {
+        try {
+          entry.row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          entry.row.classList.add('poe-value-evaluator-toplist__highlight');
+          setTimeout(() => {
+            entry.row.classList.remove('poe-value-evaluator-toplist__highlight');
+          }, 1500);
+        } catch (e) {
+          // ignore scroll errors
+        }
+      });
+
+      listEl.appendChild(itemEl);
+    });
+  }
+
   function processAllRows() {
     const rows = document.querySelectorAll('.row');
+    const evaluated = [];
+
     rows.forEach((row) => {
+      const value = evaluateRowValue(row);
+      if (value) {
+        evaluated.push(value);
+      }
+
       if (row.getAttribute(BADGE_DATA_ATTR) !== 'true') {
         processRow(row);
       }
     });
+
+    renderTopList(evaluated);
   }
 
   function findResultsContainer() {

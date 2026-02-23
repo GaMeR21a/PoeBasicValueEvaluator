@@ -13,3 +13,38 @@
 .poe-value-evaluator-badge:hover {
   background: rgba(0, 0, 0, 0.8);
 }
+
+.poe-value-evaluator-toplist {
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 6px;
+  border: 1px solid rgba(126, 211, 33, 0.6);
+  color: #f0f0f0;
+  font-size: 12px;
+}
+
+.poe-value-evaluator-toplist__title {
+  font-weight: 700;
+  margin-bottom: 4px;
+  color: #7ed321;
+}
+
+.poe-value-evaluator-toplist__list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.poe-value-evaluator-toplist__item {
+  cursor: pointer;
+  margin: 2px 0;
+}
+
+.poe-value-evaluator-toplist__item:hover {
+  text-decoration: underline;
+}
+
+.poe-value-evaluator-toplist__highlight {
+  outline: 2px solid #7ed321;
+  outline-offset: 2px;
+}
