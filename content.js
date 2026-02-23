@@ -78,6 +78,165 @@
     return parts.join(', ');
   }
 
+  // ===== Iron rune projection math (from poe2deal userscript) =====
+  const IRON_RUNE_PHYS_INC = 18; // 18% increased Physical Damage per iron rune
+
+  function parseNum(txt) {
+    const m = String(txt || '')
+      .replace(/,/g, '')
+      .match(/(\d+(\.\d+)?)/);
+    return m ? Number(m[1]) : null;
+  }
+
+  function parseRange(txt) {
+    const s = String(txt || '').replace(/,/g, '');
+    const m = s.match(/(\d+(\.\d+)?)\s*-\s*(\d+(\.\d+)?)/);
+    if (!m) return null;
+    return { min: Number(m[1]), max: Number(m[3]) };
+  }
+
+  function avgRange(r) {
+    if (!r) return null;
+    return (r.min + r.max) / 2;
+  }
+
+  function parseEdps(row) {
+    const el =
+      row.querySelector('[data-field="edps"] .colourDefault') ||
+      row.querySelector('[data-field="edps"]');
+    if (!el) return null;
+    return parseNum(el.textContent);
+  }
+
+  function parseQualityPct(row) {
+    const q = row.querySelector('[data-field="quality"]');
+    if (!q) return 0;
+    const pct = parseNum(q.textContent);
+    return Number.isFinite(pct) ? pct : 0;
+  }
+
+  function parsePhysDamageRange(row) {
+    const p = row.querySelector('[data-field="pdamage"]');
+    if (!p) return null;
+    const txt = p.textContent || '';
+    return parseRange(txt);
+  }
+
+  function parseAps(row) {
+    const a = row.querySelector('[data-field="aps"]');
+    if (!a) return null;
+    const n = parseNum(a.textContent);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  // Sum all "% increased Physical Damage" EXCEPT quality (includes rune mods)
+  function sumIncPhysPctNonQuality(row) {
+    const nodes = Array.from(
+      row.querySelectorAll('.itemBoxContent .content span, .itemBoxContent .content div')
+    );
+
+    let sum = 0;
+    for (const n of nodes) {
+      const t = (n.textContent || '').trim();
+      if (!t) continue;
+      if (/^Quality\s*:/i.test(t)) continue;
+      const m = t.match(/(\d+(\.\d+)?)%\s*increased\s+Physical\s+Damage/i);
+      if (m) sum += Number(m[1]);
+    }
+    return sum;
+  }
+
+  function sumRuneIncPhysPct(row) {
+    const runeNodes = Array.from(row.querySelectorAll('.runeMod'));
+    let sum = 0;
+    for (const n of runeNodes) {
+      const t = (n.textContent || '').trim();
+      const m = t.match(/(\d+(\.\d+)?)%\s*increased\s+Physical\s+Damage/i);
+      if (m) sum += Number(m[1]);
+    }
+    return sum;
+  }
+
+  function countRuneSlots(row) {
+    const sockets = row.querySelectorAll('.iconContainer .sockets .socket--rune');
+    if (sockets && sockets.length) return sockets.length;
+
+    const s = row.querySelector('.iconContainer .sockets');
+    if (s && s.classList) {
+      for (const c of Array.from(s.classList)) {
+        const m = c.match(/^numSockets(\d+)$/);
+        if (m) return Number(m[1]);
+      }
+    }
+    return 0;
+  }
+
+  // Compute projected total DPS after swapping ALL rune slots to iron runes,
+  // by backing out base physical damage and re-applying new inc phys and quality.
+  function projectDpsWithIronRunes(row) {
+    const dps = getDps(row);
+    const edps = parseEdps(row);
+
+    const aps = parseAps(row);
+    const physRange = parsePhysDamageRange(row);
+
+    const qualityPct = parseQualityPct(row);
+    const qualityMult = 1 + qualityPct / 100;
+
+    const incPhysPct = sumIncPhysPctNonQuality(row); // includes current rune phys, excludes quality
+    const incPhysMult = 1 + incPhysPct / 100;
+
+    const runeIncPctCurrent = sumRuneIncPhysPct(row);
+    const runeSlots = countRuneSlots(row);
+    const runeIncPctProjected = runeSlots * IRON_RUNE_PHYS_INC;
+
+    if (!aps || !physRange || !Number.isFinite(aps)) {
+      return {
+        ok: false,
+        reason: 'missing aps/phys',
+        dps,
+        edps,
+        runeSlots,
+        projectedDps: null,
+      };
+    }
+
+    const physAvg = avgRange(physRange);
+    if (!Number.isFinite(physAvg) || physAvg <= 0) {
+      return {
+        ok: false,
+        reason: 'bad phys avg',
+        dps,
+        edps,
+        runeSlots,
+        projectedDps: null,
+      };
+    }
+
+    // Base physical average damage (removing all inc phys and quality)
+    const basePhysAvg = physAvg / (incPhysMult * qualityMult);
+
+    // Replace current rune phys inc with full iron runes
+    const incPhysPctProjectedNonQuality =
+      incPhysPct - runeIncPctCurrent + runeIncPctProjected;
+    const incPhysMultProjected = 1 + incPhysPctProjectedNonQuality / 100;
+
+    // Rebuild projected phys avg and then projected phys dps
+    const physAvgProjected = basePhysAvg * incPhysMultProjected * qualityMult;
+    const pdpsProjected = physAvgProjected * aps;
+
+    const edpsSafe = Number.isFinite(edps) ? edps : 0;
+    const dpsProjected = pdpsProjected + edpsSafe;
+
+    return {
+      ok: true,
+      dps,
+      edps: edpsSafe,
+      runeSlots,
+      projectedDps: dpsProjected,
+    };
+  }
+
   // ===== Panel + navigation helpers (poe2deal-style UI) =====
   function ensurePanel() {
     let p = document.getElementById(PANEL_ID);
@@ -166,49 +325,30 @@
       }
     }
 
-    let displayDps = dps;
     const titleLines = [];
 
-    const parsed = window.PoeValueEvaluator?.weaponParser?.parseAndReverseEngineer?.(row);
-    if (parsed?.base) {
-      const { basePhysMin, basePhysMax, baseAps } = parsed.base;
-      titleLines.push(
-        `Current: ${dps} DPS → ${(dps / price.amount).toFixed(2)}/${currencyShort}`,
-        '',
-        'Base (pre-mods):',
-        `  Phys: ${Math.round(basePhysMin)}-${Math.round(basePhysMax)}`,
-        `  APS: ${baseAps.toFixed(2)}`
-      );
+    titleLines.push(
+      `Current: ${dps} DPS → ${(dps / price.amount).toFixed(2)}/${currencyShort}`
+    );
 
-      const ro = window.PoeValueEvaluator?.runeOptions;
-      const wp = window.PoeValueEvaluator?.weaponDps;
-      if (ro?.computeBestRuneVariant && wp?.calcWeaponDps && parsed.runeSlotCount > 0) {
-        const best = ro.computeBestRuneVariant(
-          parsed.base,
-          parsed.mods,
-          parsed.runeMods ?? {},
-          parsed.runeSlotCount,
-          (input) => wp.calcWeaponDps(input)
-        );
-        if (best) {
-          displayDps = best.dps;
-          const runeSummary = formatRuneConfiguration(best.rune?.configuration);
-          titleLines.push(
-            '',
-            runeSummary
-              ? `Best runes (${parsed.runeSlotCount} slots): ${runeSummary}`
-              : `Best runes (${parsed.runeSlotCount} slots)`,
-            `  DPS: ${best.dps.toFixed(1)} → ${(best.dps / price.amount).toFixed(2)}/${currencyShort}`
-          );
-        }
-      }
-    } else {
+    const ironProj = projectDpsWithIronRunes(row);
+    if (ironProj?.ok && typeof ironProj.projectedDps === 'number') {
+      const projected = ironProj.projectedDps;
+      const runeSlots = ironProj.runeSlots ?? 0;
       titleLines.push(
-        `${dps} DPS ÷ ${price.amount} ${price.currency} = ${(dps / price.amount).toFixed(2)}`
+        '',
+        `All Iron runes (${runeSlots} slots):`,
+        `  DPS: ${projected.toFixed(1)} → ${(projected / price.amount).toFixed(
+          2
+        )}/${currencyShort}`
       );
     }
 
-    const ratio = displayDps / price.amount;
+    const effectiveDps =
+      ironProj?.ok && typeof ironProj.projectedDps === 'number'
+        ? ironProj.projectedDps
+        : dps;
+    const ratio = effectiveDps / price.amount;
     badge.textContent = `${ratio.toFixed(2)} DPS/${currencyShort}`;
     badge.title = titleLines.join('\n');
 
@@ -224,43 +364,29 @@
 
     const currencyShort = formatCurrency(price.currency);
 
-    let displayDps = dps;
-    const parsed = window.PoeValueEvaluator?.weaponParser?.parseAndReverseEngineer?.(row);
-    let bestRuneSummary = null;
-    let runeSlotCount = 0;
+    const currentDps = dps;
+    const ironProj = projectDpsWithIronRunes(row);
+    const runeSlotCount = ironProj?.runeSlots ?? 0;
+    const bestDps =
+      ironProj?.ok && typeof ironProj.projectedDps === 'number'
+        ? ironProj.projectedDps
+        : null;
 
-    if (parsed?.base) {
-      const ro = window.PoeValueEvaluator?.runeOptions;
-      const wp = window.PoeValueEvaluator?.weaponDps;
-      runeSlotCount = parsed.runeSlotCount ?? 0;
-      if (ro?.computeBestRuneVariant && wp?.calcWeaponDps && runeSlotCount > 0) {
-        const best = ro.computeBestRuneVariant(
-          parsed.base,
-          parsed.mods,
-          parsed.runeMods ?? {},
-          runeSlotCount,
-          (input) => wp.calcWeaponDps(input)
-        );
-        if (best) {
-          displayDps = best.dps;
-          bestRuneSummary = formatRuneConfiguration(best.rune?.configuration);
-        }
-      }
-    }
-
-    const ratio = displayDps / price.amount;
+    const effectiveDps = typeof bestDps === 'number' && bestDps > 0 ? bestDps : currentDps;
+    const ratio = effectiveDps / price.amount;
     const id = row.getAttribute('data-id') || null;
 
     return {
       row,
       id,
-      dps,
-      displayDps,
+      dps: currentDps,
+      displayDps: effectiveDps,
+      bestDps,
       priceAmount: price.amount,
       priceCurrency: price.currency,
       currencyShort,
       ratio,
-      bestRuneSummary,
+      bestRuneSummary: bestDps ? `All Iron (${runeSlotCount} slots)` : null,
       runeSlotCount,
     };
   }
@@ -283,8 +409,12 @@
     let html = `<b>Best DPS/Div (Top 5)</b><br>`;
 
     top.forEach((entry, i) => {
-      const ratioText = entry.ratio.toFixed(2);
-      const dpsText = entry.displayDps.toFixed(1);
+      const ratioText = entry.ratio.toFixed(2); // based on best-rune DPS
+      const currentDpsText =
+        typeof entry.dps === 'number' && Number.isFinite(entry.dps)
+          ? entry.dps.toFixed(1)
+          : '?';
+      const bestDpsText = entry.displayDps.toFixed(1);
       const priceText = `${entry.priceAmount} ${entry.priceCurrency}`;
       const runeText =
         entry.bestRuneSummary && entry.runeSlotCount > 0
@@ -297,7 +427,7 @@
           ? entry.index
           : '';
 
-      html += `#${i + 1}: <a class="${PANEL_LINK_CLASS}" data-id="${safeId}" data-index="${safeIndex}"><b>${ratioText}</b></a> (${dpsText} DPS for ${priceText}${runeText})<br>`;
+      html += `#${i + 1}: <a class="${PANEL_LINK_CLASS}" data-id="${safeId}" data-index="${safeIndex}"><b>${ratioText}</b></a> (${currentDpsText}→${bestDpsText} DPS for ${priceText}${runeText})<br>`;
     });
 
     setPanel(html);

@@ -133,7 +133,8 @@
           };
 
           const result = calcDps(input);
-          const dps = result?.totalDps ?? 0;
+          // Use non-crit total DPS to match trade site's displayed DPS more closely.
+          const dps = (result && typeof result.totalDps === 'number') ? result.totalDps : 0;
 
           if (!best || dps > best.dps) {
             best = {
