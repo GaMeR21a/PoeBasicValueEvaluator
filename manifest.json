@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "PoE2 Weapon Value Evaluator",
+  "version": "1.0.0",
+  "description": "Shows DPS-to-cost ratio for weapons on the Path of Exile 2 trade site",
+  "permissions": ["activeTab"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.pathofexile.com/trade2*"],
+      "js": ["weapon-dps.js", "weapon-parser.js", "rune-options.js", "content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

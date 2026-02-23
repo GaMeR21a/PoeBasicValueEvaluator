@@ -1,0 +1,15 @@
+.poe-value-evaluator-badge {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #7ed321;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.poe-value-evaluator-badge:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
